@@ -228,7 +228,7 @@ class Trainer(DefaultTrainer):
                     )
                     results[dataset_name] = {}
                     continue
-            with autocast():
+            with torch.amp.autocast("cuda"):
                 results_i = inference_on_dataset(model, data_loader, evaluator)
             results[dataset_name] = results_i
             if comm.is_main_process():

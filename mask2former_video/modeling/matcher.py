@@ -131,7 +131,7 @@ class VideoHungarianMatcher(nn.Module):
                 align_corners=False,
             ).flatten(1)
 
-            with autocast(enabled=False):
+            with torch.amp.autocast("cuda", enabled=False):
                 out_mask = out_mask.float()
                 tgt_mask = tgt_mask.float()
                 # Compute the focal loss between masks
