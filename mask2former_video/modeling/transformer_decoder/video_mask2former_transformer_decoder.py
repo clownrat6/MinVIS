@@ -44,7 +44,7 @@ class SelfAttentionLayer(nn.Module):
                      query_pos: Optional[Tensor] = None):
         q = k = self.with_pos_embed(tgt, query_pos)
         tgt2 = self.self_attn(q, k, value=tgt, attn_mask=tgt_mask,
-                              key_padding_mask=tgt_key_padding_mask)[0]
+                              key_padding_mask=tgt_key_padding_mask, need_weights=True)[0]
         tgt = tgt + self.dropout(tgt2)
         tgt = self.norm(tgt)
 
@@ -104,7 +104,7 @@ class CrossAttentionLayer(nn.Module):
         tgt2 = self.multihead_attn(query=self.with_pos_embed(tgt, query_pos),
                                    key=self.with_pos_embed(memory, pos),
                                    value=memory, attn_mask=memory_mask,
-                                   key_padding_mask=memory_key_padding_mask)[0]
+                                   key_padding_mask=memory_key_padding_mask, need_weights=True)[0]
         tgt = tgt + self.dropout(tgt2)
         tgt = self.norm(tgt)
         
@@ -407,6 +407,7 @@ class VideoMultiScaleMaskedTransformerDecoder(nn.Module):
         for i in range(self.num_layers):
             level_index = i % self.num_feature_levels
             attn_mask[torch.where(attn_mask.sum(-1) == attn_mask.shape[-1])] = False
+            # attn_mask[attn_mask.sum(-1) == attn_mask.shape[-1]] = False
             # attention: cross-attention first
             output = self.transformer_cross_attention_layers[i](
                 output, src[level_index],

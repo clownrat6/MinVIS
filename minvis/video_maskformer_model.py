@@ -30,6 +30,21 @@ from scipy.optimize import linear_sum_assignment
 logger = logging.getLogger(__name__)
 
 
+def match_via_embeds(tgt_embeds, cur_embeds):
+    # NOTE: vanilla normalize (8.03~9.13e-05s) vs F.normalize (6.84e-05s~7.79e-05s)
+    # cur_embeds = cur_embeds / cur_embeds.norm(dim=1)[:, None]
+    # tgt_embeds = tgt_embeds / tgt_embeds.norm(dim=1)[:, None]
+    cur_embeds = F.normalize(cur_embeds, p=2, dim=-1)
+    tgt_embeds = F.normalize(tgt_embeds, p=2, dim=-1)
+    cos_sim = torch.mm(tgt_embeds, cur_embeds.T)
+
+    C = (1 - cos_sim).detach()
+    indices = linear_sum_assignment(C.cpu())  # current x target
+    indices = indices[1]  # permutation that makes current aligns to target
+
+    return torch.tensor(indices, device=tgt_embeds.device, dtype=torch.long)
+
+
 @META_ARCH_REGISTRY.register()
 class VideoMaskFormer_frame(nn.Module):
     """
@@ -162,6 +177,54 @@ class VideoMaskFormer_frame(nn.Module):
     @property
     def device(self):
         return self.pixel_mean.device
+
+    def online_inference(self, cur_frame, old_outputs):
+        import time
+
+        # normalized_cur_frame = self.online_preprocess(cur_frame)
+        images = [(x - self.pixel_mean) / self.pixel_std for x in cur_frame]
+        images = ImageList.from_tensors(images, self.size_divisibility)
+        normalized_cur_frame = images.tensor
+
+        start = time.time()
+        features = self.backbone(normalized_cur_frame)
+        end1 = time.time()
+        mask_features, _, multi_scale_features = self.sem_seg_head.pixel_decoder.forward_features(features)
+        end2 = time.time()
+        outputs = self.sem_seg_head.predictor(multi_scale_features, mask_features)
+        end3 = time.time()
+
+        if old_outputs is not None:
+            tgt_embeds = old_outputs['pred_embds']
+            cur_embeds = outputs['pred_embds']
+
+            indices = match_via_embeds(tgt_embeds[0, 0], cur_embeds[0, 0])
+
+            # NOTE: (360p ytvis2019): list indices (14.5e-05s) vs torch tensor indices (6.77e-05s) vs index_select (4.67e-05s)
+            # indices = indices.tolist()
+            # outputs['pred_embeds'] = outputs['pred_embeds'][:, :, _indices]
+            # outputs['pred_logits'] = outputs['pred_logits'][:, :, _indices]
+            # outputs['pred_masks']  = outputs['pred_masks'][:, _indices]
+            # indices = torch.tensor(indices, device=tgt_embeds.device, dtype=torch.long)
+            # outputs['pred_embeds'] = outputs['pred_embeds'][:, :, indices]
+            # outputs['pred_logits'] = outputs['pred_logits'][:, :, indices]
+            # outputs['pred_masks']  = outputs['pred_masks'][:, indices]
+            # indices = torch.tensor(indices, device=tgt_embeds.device, dtype=torch.long)
+            outputs['pred_embds'] = outputs['pred_embds'].index_select(2, indices)
+            outputs['pred_logits'] = outputs['pred_logits'].index_select(2, indices)
+            outputs['pred_masks']  = outputs['pred_masks'].index_select(1, indices)
+
+        end4 = time.time()
+
+        print("===========")
+        print(cur_frame.shape)
+        print("backbone: ", end1 - start)
+        print("pixel_decoder: ", end2 - end1)
+        print("predictor: ", end3 - end2)
+        print("match: ", end4 - end3)
+        print("total: ", end4 - start)
+
+        return outputs
 
     def forward(self, batched_inputs):
         """
